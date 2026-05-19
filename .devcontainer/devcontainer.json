@@ -1,0 +1,45 @@
+{
+  "name": "Zephyr Dev",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  "remoteUser": "root",
+  "workspaceFolder": "/workspaces/zephyrproject",
+
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspaces/zephyrproject,type=bind"
+  ],
+
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+
+  "containerEnv": {
+    "ZEPHYR_BASE": "/opt/zephyrproject/zephyr",
+    "ZEPHYR_TOOLCHAIN_VARIANT": "zephyr",
+    "ZEPHYR_SDK_INSTALL_DIR": "/opt/zephyr-sdk"
+  },
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+        "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+        "C_Cpp.intelliSenseEngine": "default",
+        "cmake.configureOnOpen": true,
+        "files.associations": {
+          "*.overlay": "c",
+          "*.conf": "properties"
+        }
+      },
+
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-vscode.cpptools-extension-pack",
+        "nordic-semiconductor.nrf-connect",
+        "ms-azuretools.vscode-docker",
+        "eamodio.gitlens"
+      ]
+    }
+  }
+}

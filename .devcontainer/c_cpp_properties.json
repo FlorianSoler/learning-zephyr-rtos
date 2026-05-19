@@ -1,0 +1,17 @@
+{
+  "configurations": [
+    {
+      "name": "Zephyr",
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+      "intelliSenseMode": "linux-gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "/opt/zephyrproject/**"
+      ]
+    }
+  ],
+  "version": 4
+}
