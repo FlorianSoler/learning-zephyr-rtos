@@ -1,5 +1,5 @@
 build/
+*/build/
 .west/
 .vscode/
 zephyr/
-app/build/
