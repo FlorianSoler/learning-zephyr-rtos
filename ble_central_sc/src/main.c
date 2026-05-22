@@ -1,4 +1,4 @@
-/* main.c - Application Centrale Bluetooth corrigée et stabilisée */
+/* main.c - Application Centrale Bluetooth avec gestion de la LED0 */
 
 #include <zephyr/types.h>
 #include <stddef.h>
@@ -20,12 +20,10 @@
 
 // --- CONFIGURATION DU MATÉRIEL SANS ALIAS ---
 #define PAIR_BUTTON_NODE DT_PATH(buttons, button_0)
-
-#if !DT_NODE_HAS_STATUS_OKAY(PAIR_BUTTON_NODE)
-#error "Le nœud Devicetree /buttons/button_0 n'est pas défini ou est désactivé !"
-#endif
+#define LED0_NODE DT_ALIAS(led0)
 
 static const struct gpio_dt_spec pair_button = GPIO_DT_SPEC_GET(PAIR_BUTTON_NODE, gpios);
+static const struct gpio_dt_spec led0        = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 static struct bt_conn *default_conn = NULL;
 static bool bond_found = false;
@@ -45,9 +43,9 @@ static bool parse_device_name(struct bt_data *data, void *user_data)
     case BT_DATA_NAME_COMPLETE:
         memcpy(name, data->data, len);
         name[len] = '\0';
-        return false; // On a trouvé le nom, on arrête le parsing
+        return false; 
     default:
-        return true;  // Ce n'est pas le nom, on continue à chercher
+        return true;  
     }
 }
 
@@ -70,7 +68,6 @@ static void scan_recv(const struct bt_le_scan_recv_info *info, struct net_buf_si
 
     bt_data_parse(ad, parse_device_name, name);
 
-    // Comparaison du nom extrait avec notre cible
     if (strcmp(name, TARGET_NAME) == 0) {
         if (bond_found || allow_pairing) {
             printk("[Centrale] CIBLE TROUVEE : '%s'. Arret du scan et connexion...\n", name);
@@ -81,7 +78,6 @@ static void scan_recv(const struct bt_le_scan_recv_info *info, struct net_buf_si
                 return;
             }
 
-            // Lancement de la connexion
             err = bt_conn_le_create(info->addr, BT_CONN_LE_CREATE_CONN, 
                                     BT_LE_CONN_PARAM_DEFAULT, &default_conn);
             if (err) {
@@ -130,6 +126,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr_str, sizeof(addr_str));
     printk("[Centrale] Connecte a : %s\n", addr_str);
 
+    // --- ALLUMER LA LED0 ---
+    gpio_pin_set_dt(&led0, 1);
+
     // On planifie la demande de sécurité rapidement (50ms) après la connexion stable
     k_work_schedule(&security_work, K_MSEC(50));
 }
@@ -138,7 +137,9 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     printk("[Centrale] Deconnecte. Raison: 0x%02x\n", reason);
 
-    // Annulation d'un éventuel travail de sécurité programmé
+    // --- ÉTEINDRE LA LED0 ---
+    gpio_pin_set_dt(&led0, 0);
+
     k_work_cancel_delayable(&security_work);
 
     if (default_conn == conn) {
@@ -181,8 +182,6 @@ static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 
 static void auth_passkey_confirm(struct bt_conn *conn, unsigned int passkey)
 {
-    // Indispensable pour l'authentification L4 (Secure Connections) : 
-    // Valide automatiquement la comparaison numérique (mode Display Yes/No)
     printk("[Centrale] Validation automatique du code SC : %06u\n", passkey);
     bt_conn_auth_passkey_confirm(conn);
 }
@@ -202,7 +201,6 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
     printk("Echec de l'appairage (Raison de l'echec: %d). Coupure de la connexion.\n", reason);
 }
 
-// Cette structure contient désormais les 3 pointeurs indispensables requis pour le niveau L4
 static struct bt_conn_auth_cb auth_cb_display = {
     .passkey_display = auth_passkey_display,
     .passkey_confirm = auth_passkey_confirm,
@@ -214,15 +212,25 @@ static struct bt_conn_auth_info_cb auth_cb_info = {
     .pairing_failed = pairing_failed,
 };
 
-// --- INITIALISATION DU BOUTON D'APPAIRAGE ---
-int init_pair_button(void)
+// --- INITIALISATION DU MATÉRIEL (BOUTON & LED) ---
+int init_hardware(void)
 {
+    int ret;
+
+    // Bouton
     if (!gpio_is_ready_dt(&pair_button)) {
         printk("Erreur : Le GPIO du bouton n'est pas pret.\n");
         return -ENODEV;
     }
+    ret = gpio_pin_configure_dt(&pair_button, GPIO_INPUT);
+    if (ret != 0) return ret;
 
-    int ret = gpio_pin_configure_dt(&pair_button, GPIO_INPUT);
+    // LED0
+    if (!gpio_is_ready_dt(&led0)) {
+        printk("Erreur : Le GPIO de la LED0 n'est pas pret.\n");
+        return -ENODEV;
+    }
+    ret = gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
     if (ret != 0) return ret;
 
     return 0;
@@ -234,13 +242,11 @@ int main(void)
 
     printk("Demarrage de la Centrale Bluetooth...\n");
 
-    err = init_pair_button();
+    err = init_hardware();
     if (err) return err;
 
-    // Initialisation du thread différé de gestion de la sécurité
     k_work_init_delayable(&security_work, security_initiate_work);
 
-    // 1. Activer la puce Bluetooth matérielle
     err = bt_enable(NULL);
     if (err) {
         printk("Echec de l'activation du Bluetooth (err %d)\n", err);
@@ -249,7 +255,6 @@ int main(void)
 
     printk("Puce Bluetooth activee.\n");
 
-    // 2. CRUCIAL : Enregistrer l'infrastructure d'authentification juste APRES bt_enable
     err = bt_conn_auth_cb_register(&auth_cb_display);
     if (err) {
         printk("Erreur d'enregistrement des IO capabilities (err %d)\n", err);
@@ -260,14 +265,11 @@ int main(void)
         settings_load();
     }
 
-    // Force la purge mémoire pour s'assurer de repartir sur des bases propres au démarrage
     bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
     printk("Nettoyage des anciennes liaisons Flash effectue.\n");
 
-    // Enregistrement du scanner auprès du sous-système BLE
     bt_le_scan_cb_register(&scan_callbacks);
 
-    // Paramètres de scan explicites
     struct bt_le_scan_param scan_param = {
         .type       = BT_LE_SCAN_TYPE_ACTIVE, 
         .options    = BT_LE_SCAN_OPT_NONE,    
@@ -285,7 +287,6 @@ int main(void)
 
     while (1) {
         if (!bond_found) {
-            // Lecture physique de l'état du bouton (1 = pressé)
             if (gpio_pin_get_dt(&pair_button) == 1) {
                 if (!allow_pairing) {
                     allow_pairing = true;

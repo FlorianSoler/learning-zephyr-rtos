@@ -1,0 +1,18 @@
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+
+    buttons {
+        compatible = "gpio-keys";
+        button_0: button_0 {
+            gpios = <&gpio0 31 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+        };
+    };
+};
+
+&storage_partition {
+    /* On force l'adresse à 0xED000 et la taille à 28 Ko (0x7000) 
+       pour éviter la zone de crash du bootloader UF2 */
+    reg = <0x000ED000 0x00007000>;
+};
