@@ -1,0 +1,35 @@
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+		reset_button: reset_button {
+			gpios = <&gpio0 31 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Reset BLE Connections Button";
+		};
+	};
+};
+
+&storage_partition {
+    /* On force l'adresse à 0xED000 et la taille à 28 Ko (0x7000) 
+       pour éviter la zone de crash du bootloader UF2 */
+    reg = <0x000ED000 0x00007000>;
+};
+
+
+// ou encore : 
+// &flash0 {
+// 	partitions {
+// 		compatible = "fixed-partitions";
+// 		#address-cells = <1>;
+// 		#size-cells = <1>;
+
+// 		/* On l'appelle de manière unique pour empêcher toute duplication */
+// 		zephyr_settings_flash: partition@ed000 {
+// 			label = "storage";
+// 			reg = <0x000ED000 0x00007000>;
+// 		};
+// 	};
+// };
