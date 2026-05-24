@@ -1,112 +1,266 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
-#include <zephyr/drivers/gpio.h>
+
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <zephyr/drivers/gpio.h>
+
+#define LED_NODE DT_NODELABEL(gpio0)
+
+static const struct device *gpio0_dev =
+    DEVICE_DT_GET(LED_NODE);
 
 static const struct device *uart = DEVICE_DT_GET(DT_NODELABEL(uart0));
 
-#define BUF_SIZE 128
+#define NMEA_BUF_SIZE 128
 
-static char line[BUF_SIZE];
-static uint8_t idx = 0;
+static char nmea_buf[NMEA_BUF_SIZE];
+static int nmea_pos = 0;
 
-static char lat[16];
-static char lon[16];
-static char alt[16];
-static char speed[16];
+typedef struct __attribute__((packed)) {
 
-/* ---------------- GPIO P0.13 ---------------- */
-#define GPIO0_NODE DT_NODELABEL(gpio0)
-static const struct device *gpio0_dev = DEVICE_DT_GET(GPIO0_NODE);
+    uint32_t unix_time;
 
-/* ---------------- RMC parser ---------------- */
-static void parse_rmc(char *l)
+    int32_t lat_e7;
+    int32_t lon_e7;
+
+    int16_t alt_m;
+
+    uint16_t speed_cmh;
+
+    uint8_t hdop_x10;
+    uint8_t accuracy_m;
+
+} GPS_MQTT_Packet_t;
+
+static GPS_MQTT_Packet_t gps;
+
+
+///////////////////////////////////////////////////////////
+// NMEA helpers
+///////////////////////////////////////////////////////////
+
+static double nmea_to_decimal(const char *val, char dir)
 {
-    char *p = strtok(l, ",");
-    int field = 0;
-    char status = 'V';
+    double raw = atof(val);
 
-    while (p) {
-        field++;
+    int deg = (int)(raw / 100);
+    double minutes = raw - (deg * 100);
 
-        if (field == 3) status = p[0];
-        if (field == 4) strncpy(lat, p, sizeof(lat));
-        if (field == 6) strncpy(lon, p, sizeof(lon));
-        if (field == 8) strncpy(speed, p, sizeof(speed));
+    double dec = deg + (minutes / 60.0);
 
-        p = strtok(NULL, ",");
+    if (dir == 'S' || dir == 'W') {
+        dec = -dec;
     }
 
-    if (status == 'A') {
-        printk("LAT: %s\nLON: %s\nSPEED: %s knots\n", lat, lon, speed);
-    }
+    return dec;
 }
 
-/* ---------------- GGA parser ---------------- */
-static void parse_gga(char *l)
+static uint32_t parse_time(const char *hhmmss)
 {
-    char *p = strtok(l, ",");
+    int hh, mm;
+    float ss;
+
+    sscanf(hhmmss, "%2d%2d%f", &hh, &mm, &ss);
+
+    // simple packed time for demo
+    return (hh * 3600) + (mm * 60) + (uint32_t)ss;
+}
+
+
+///////////////////////////////////////////////////////////
+// Parse RMC
+///////////////////////////////////////////////////////////
+
+static void parse_rmc(char *line)
+{
+    char *token;
+
+    token = strtok(line, ",");
+
     int field = 0;
 
-    while (p) {
-        field++;
+    char time_str[16] = {0};
+    char lat_str[16] = {0};
+    char lon_str[16] = {0};
 
-        if (field == 10) {
-            strncpy(alt, p, sizeof(alt));
+    char lat_dir = 0;
+    char lon_dir = 0;
+
+    float speed_knots = 0;
+
+    while (token) {
+
+        switch (field) {
+
+        case 1:
+            strcpy(time_str, token);
+            break;
+
+        case 3:
+            strcpy(lat_str, token);
+            break;
+
+        case 4:
+            lat_dir = token[0];
+            break;
+
+        case 5:
+            strcpy(lon_str, token);
+            break;
+
+        case 6:
+            lon_dir = token[0];
+            break;
+
+        case 7:
+            speed_knots = atof(token);
+            break;
         }
 
-        p = strtok(NULL, ",");
+        token = strtok(NULL, ",");
+        field++;
     }
 
-    printk("ALT: %s m\n", alt);
+    gps.unix_time = parse_time(time_str);
+
+    double lat = nmea_to_decimal(lat_str, lat_dir);
+    double lon = nmea_to_decimal(lon_str, lon_dir);
+
+    gps.lat_e7 = (int32_t)(lat * 1e7);
+    gps.lon_e7 = (int32_t)(lon * 1e7);
+
+    // knots -> km/h
+    gps.speed_cmh = (uint16_t)(speed_knots * 1.852 * 100);
 }
 
-/* ---------------- process line ---------------- */
-static void process_line(char *l)
+
+///////////////////////////////////////////////////////////
+// Parse GGA
+///////////////////////////////////////////////////////////
+
+static void parse_gga(char *line)
 {
-    if (strncmp(l, "$GNRMC", 6) == 0) {
-        parse_rmc(l);
+    char *token;
+
+    token = strtok(line, ",");
+
+    int field = 0;
+
+    float hdop = 0;
+    float alt = 0;
+
+    while (token) {
+
+        switch (field) {
+
+        case 8:
+            hdop = atof(token);
+            break;
+
+        case 9:
+            alt = atof(token);
+            break;
+        }
+
+        token = strtok(NULL, ",");
+        field++;
     }
-    else if (strncmp(l, "$GNGGA", 6) == 0) {
-        parse_gga(l);
+
+    gps.alt_m = (int16_t)alt;
+
+    gps.hdop_x10 = (uint8_t)(hdop * 10);
+
+    // rough estimate
+    gps.accuracy_m = (uint8_t)(hdop * 4.0);
+}
+
+
+///////////////////////////////////////////////////////////
+// Handle full NMEA line
+///////////////////////////////////////////////////////////
+
+static void process_nmea(char *line)
+{
+    if (strstr(line, "$GNRMC") || strstr(line, "$GPRMC")) {
+
+        parse_rmc(line);
+
+        printk("RMC parsed\n");
+
+    } else if (strstr(line, "$GNGGA") || strstr(line, "$GPGGA")) {
+
+        parse_gga(line);
+
+        printk("GGA parsed\n");
+
+        printk("LAT: %d\n", gps.lat_e7);
+        printk("LON: %d\n", gps.lon_e7);
+        printk("SPD: %d\n", gps.speed_cmh);
+        printk("ALT: %d\n", gps.alt_m);
+        printk("HDOP: %d\n", gps.hdop_x10);
     }
 }
 
-/* ---------------- UART callback ---------------- */
-static void uart_cb(const struct device *dev, void *user_data)
+
+///////////////////////////////////////////////////////////
+// UART callback
+///////////////////////////////////////////////////////////
+
+void uart_cb(const struct device *dev, void *user_data)
 {
     uint8_t c;
 
     while (uart_fifo_read(dev, &c, 1)) {
 
         if (c == '\n') {
-            line[idx] = '\0';
-            process_line(line);
-            idx = 0;
-        }
-        else if (idx < BUF_SIZE - 1) {
-            line[idx++] = c;
+
+            nmea_buf[nmea_pos] = 0;
+
+            process_nmea(nmea_buf);
+
+            nmea_pos = 0;
+
+        } else {
+
+            if (nmea_pos < (NMEA_BUF_SIZE - 1)) {
+                nmea_buf[nmea_pos++] = c;
+            }
         }
     }
 }
 
-/* ---------------- MAIN ---------------- */
+
+///////////////////////////////////////////////////////////
+// Main
+///////////////////////////////////////////////////////////
 void main(void)
 {
-    /* --- GPIO P0.13 HIGH --- */
-    if (device_is_ready(gpio0_dev)) {
-        gpio_pin_configure(gpio0_dev, 13, GPIO_OUTPUT_ACTIVE);
-        gpio_pin_set(gpio0_dev, 13, 1); // HIGH
-    }
-
-    /* --- UART --- */
     if (!device_is_ready(uart)) {
         return;
     }
 
-    uart_irq_callback_user_data_set(uart, uart_cb, NULL);
+    // Keep P0.13 HIGH
+    if (device_is_ready(gpio0_dev)) {
+
+        gpio_pin_configure(
+            gpio0_dev,
+            13,
+            GPIO_OUTPUT_ACTIVE
+        );
+
+        gpio_pin_set(gpio0_dev, 13, 1);
+    }
+
+    uart_irq_callback_user_data_set(
+        uart,
+        uart_cb,
+        NULL
+    );
+
     uart_irq_rx_enable(uart);
 
     while (1) {
