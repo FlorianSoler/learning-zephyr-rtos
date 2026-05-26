@@ -10,4 +10,12 @@ generate_inc_file_for_target(app certificate/root.cert.pem  ${gen_dir}/root.cert
 generate_inc_file_for_target(app certificate/client_4.cert.pem   ${gen_dir}/client.cert.pem.inc)
 generate_inc_file_for_target(app certificate/client_4.key.pem   ${gen_dir}/client.key.pem.inc)
 
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE 
+    src/main.c 
+    src/modem_driver.c
+    src/certificates.c
+)
+
+target_include_directories(app PRIVATE 
+    include
+)
