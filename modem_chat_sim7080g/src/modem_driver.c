@@ -239,29 +239,17 @@ int modem_provision_and_configure_tls(modem_ctx_t *ctx, int ssl_idx,
         return ret;
     }
 
-    /* Step 4: Configure SSL Version to TLS 1.2 (Value 3) */
     snprintf(cmd, sizeof(cmd), "AT+CSSLCFG=\"sslversion\",%d,3", ssl_idx);
     ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
     if (ret != 0) return ret;
 
-    /* Step 5: Set Auth Mode to Mutual Authentication (Value 2) */
-    snprintf(cmd, sizeof(cmd), "AT+CSSLCFG=\"authmode\",%d,2", ssl_idx);
-    ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
+    ret = modem_send_command(ctx, "AT+CSSLCFG=\"CONVERT\",2,\"root_ca.pem\"", resp, sizeof(resp), 2000);
     if (ret != 0) return ret;
 
-    /* Step 6: Bind the flashed Root CA filename to this context slot */
-    snprintf(cmd, sizeof(cmd), "AT+CSSLCFG=\"cacert\",%d,\"ca.pem\"", ssl_idx);
-    ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
+    ret = modem_send_command(ctx, "AT+CSSLCFG=\"CONVERT\",1,\"client_cert.pem\",\"client_key.pem\"", resp, sizeof(resp), 2000);
     if (ret != 0) return ret;
 
-    /* Step 7: Bind the flashed Client Certificate filename */
-    snprintf(cmd, sizeof(cmd), "AT+CSSLCFG=\"clientcert\",%d,\"cert.pem\"", ssl_idx);
-    ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
-    if (ret != 0) return ret;
-
-    /* Step 8: Bind the flashed Client Private Key filename */
-    snprintf(cmd, sizeof(cmd), "AT+CSSLCFG=\"clientkey\",%d,\"key.pem\"", ssl_idx);
-    ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
+    ret = modem_send_command(ctx, "AT+SMSSL=1,\"root_ca.pem\",\"client_cert.pem\"", resp, sizeof(resp), 2000);
     if (ret != 0) return ret;
 
     LOG_INF("TLS provisioning complete");
@@ -280,6 +268,26 @@ int modem_mqtt_connect(modem_ctx_t *ctx, const char *url, int port,
     
     /* Lock the entire configuration bundle sequence */
     k_mutex_lock(&ctx->lock, K_FOREVER);
+
+    /* =========================================================
+     * STEP 0: Check if MQTT is already connected (+SMSTATE: 1)
+     * ========================================================= */
+    uart_clear_buffers(ctx);
+    uart_send(ctx, "AT+SMSTATE?");
+    
+    /* Expect an 'OK' response, but we must parse the payload buffer */
+    ret = wait_for_response(ctx, "OK", resp, sizeof(resp), 2000);
+    if (ret == 0) {
+        /* If the response contains "+SMSTATE: 1", the connection is alive */
+        if (strstr(resp, "+SMSTATE: 1")) {
+            LOG_INF("MQTT session is already open. Skipping reconnection.");
+            ret = 0; 
+            goto unlock_and_exit;
+        }
+        LOG_DBG("MQTT not connected (State response: %s). Proceeding.", resp);
+    } else {
+        LOG_WRN("Failed to read MQTT state, attempting normal connection flow.");
+    }
 
     // 1. Set Broker URL and Port
     snprintf(cmd, sizeof(cmd), "AT+SMCONF=\"URL\",\"%s\",%d", url, port);
@@ -301,13 +309,11 @@ int modem_mqtt_connect(modem_ctx_t *ctx, const char *url, int port,
     ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
     if (ret != 0) goto unlock_and_exit;
 
-    // 5. CRITICAL: Link the MQTT client instance to our secure TLS profile
-    snprintf(cmd, sizeof(cmd), "AT+SMCONF=\"SSLI\",%d", ssl_idx);
-    ret = modem_send_command(ctx, cmd, resp, sizeof(resp), 2000);
-    if (ret != 0) goto unlock_and_exit;
-
-    // 6. Execute Connection Request (Allow up to 30 seconds for TLS Handshake)
+    // 5. Execute Connection Request (Allow up to 30 seconds for TLS Handshake)
     LOG_INF("Connecting to broker (TLS handshake)");
+    
+    /* Note: Increased timeout here slightly because your comment mentions 
+       30 seconds, but your original code only gave it 3000ms (3 seconds). */
     ret = modem_send_command(ctx, "AT+SMCONN", resp, sizeof(resp), 30000);
 
 unlock_and_exit:

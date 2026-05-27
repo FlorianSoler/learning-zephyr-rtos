@@ -22,9 +22,13 @@ int main(void)
     k_sleep(K_SECONDS(2));
 
     modem_send_command(&sim7080_ctx, "ATE0", resp, sizeof(resp), 2000); 
+
     modem_send_command(&sim7080_ctx, "AT+CPIN?", resp, sizeof(resp), 3000);
     modem_send_command(&sim7080_ctx, "AT+CSQ", resp, sizeof(resp), 3000);
+    modem_send_command(&sim7080_ctx, "AT+CEREG?", resp, sizeof(resp), 3000);
     modem_send_command(&sim7080_ctx, "AT+CGATT=1", resp, sizeof(resp), 10000);
+    modem_send_command(&sim7080_ctx, "AT+CGDCONT=1,\"IP\",\"TM\"", resp, sizeof(resp), 5000);
+    modem_send_command(&sim7080_ctx, "AT+CNACT?", resp, sizeof(resp), 5000);
 
     if (modem_provision_and_configure_tls(&sim7080_ctx, 0, 
                                           root_ca, root_ca_len, 
