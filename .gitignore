@@ -3,3 +3,4 @@ build/
 .west/
 .vscode/
 zephyr/
+*.pem
