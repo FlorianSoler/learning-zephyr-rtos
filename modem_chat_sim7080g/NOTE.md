@@ -52,3 +52,4 @@ AT+CSSLCFG="CONVERT",2,"root_ca.pem"
 AT+CSSLCFG="CONVERT",1,"client_cert.pem","client_key.pem"
 AT+SMSSL=1,"root_ca.pem","client_cert.pem"
 AT+SMCONN
+AT+SMPUB="tracker/client_4/msg",8,1,0
