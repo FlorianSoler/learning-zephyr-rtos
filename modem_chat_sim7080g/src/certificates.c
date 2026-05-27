@@ -1,4 +1,3 @@
-#include <stddef.h>
 #include "certificates.h"
 
 const unsigned char root_ca[] = {

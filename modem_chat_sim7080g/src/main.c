@@ -1,48 +1,65 @@
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
 #include "modem_driver.h"
 #include "certificates.h"
+#include "app_config.h"
+
+static modem_ctx_t sim7080_ctx;
 
 int main(void)
 {
     char resp[256];
+    
+    const struct device *uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart1));
 
-    printk("Initializing Cellular Tracker...\n");
+    printk("Initializing Cellular Tracker (Context-Based Architecture)...\n");
 
-    /* 1. Start Hardware */
-    if (modem_hardware_init() != 0) {
-        printk("Hardware error: UART interface not ready.\n");
+    if (modem_init(&sim7080_ctx, uart_dev) != 0) {
+        printk("Hardware error: UART interface not ready or context binding failed.\n");
         return -1;
     }
 
     k_sleep(K_SECONDS(2));
 
-    /* 2. Configure Modem Basics */
-    modem_send_command("ATE0", resp, sizeof(resp), 2000); 
-    modem_send_command("AT+CPIN?", resp, sizeof(resp), 3000);
-    modem_send_command("AT+CSQ", resp, sizeof(resp), 3000);
-    modem_send_command("AT+CGATT=1", resp, sizeof(resp), 10000);
+    modem_send_command(&sim7080_ctx, "ATE0", resp, sizeof(resp), 2000); 
+    modem_send_command(&sim7080_ctx, "AT+CPIN?", resp, sizeof(resp), 3000);
+    modem_send_command(&sim7080_ctx, "AT+CSQ", resp, sizeof(resp), 3000);
+    modem_send_command(&sim7080_ctx, "AT+CGATT=1", resp, sizeof(resp), 10000);
 
-    /* 3. Flash Security Assets */
-    if (modem_write_file(3, "root_ca.pem", root_ca, root_ca_len, 2) != 0) {
-        printk("Boot halted: Root CA failed validation check.\n");
-        return -1;
-    }
-
-    if (modem_write_file(3, "client_cert.pem", client_cert, client_cert_len, 1) != 0) {
-        printk("Boot halted: Client Cert failed validation check.\n");
-        return -1;
-    }
-
-    /* Note: If using your traditional SEC1 ECC key, remember to use Type 4 here! */
-    if (modem_write_file(3, "client_key.pem", client_key, client_key_len, 4) != 0) {
-        printk("Boot halted: Private Key failed validation check.\n");
+    if (modem_provision_and_configure_tls(&sim7080_ctx, 0, 
+                                          root_ca, root_ca_len, 
+                                          client_cert, client_cert_len, 
+                                          client_key, client_key_len) != 0) {
+        printk("Boot halted: Secure TLS Provisioning Pipeline Failed.\n");
         return -1;
     }
 
     printk("\nSYSTEM CONFIGURATION COMPLETE\n");
-    
+
+    if (modem_mqtt_connect(&sim7080_ctx, 
+                           MQTT_BROKER_URL, 
+                           MQTT_BROKER_PORT, 
+                           MQTT_CLIENT_ID, 
+                           MQTT_KEEP_ALIVE_SEC, 
+                           MQTT_CLEAN_SESSION, 
+                           MQTT_SSL_CTX_INDEX) != 0) {
+        printk("Network error: MQTT secure handshaking failed.\n");
+        return -1;
+    }
+
+    int ret = modem_mqtt_publish(&sim7080_ctx, 
+                                "tracker/" MQTT_CLIENT_ID "/msg", // Topic: tracker/client_4/msg
+                                "hello world",                    // Payload
+                                1,                                // QoS 1 (Acknowledged)
+                                0);                               // Retain (0 = Do not retain)
+
+    if (ret == 0) {
+        printk("Payload successfully sent!\n");
+    } else {
+        printk("Error: Failed to publish message (Code: %d)\n", ret);
+    }
+
     while (1) {
-        // Future MQTT logic goes here
         k_sleep(K_SECONDS(1));
     }
 }
