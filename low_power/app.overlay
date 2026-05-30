@@ -1,17 +1,10 @@
-/ {
-    /* Define custom pins here to bypass driver YAML validation */
-    zephyr,user {
-        pullup-power-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
-    };
-};
-
 &pinctrl {
     i2c0_default: i2c0_default {
         group1 {
             psels =
                 <NRF_PSEL(TWIM_SDA, 0, 22)>,
                 <NRF_PSEL(TWIM_SCL, 0, 24)>;
-            bias-disable; /* Disables internal pulls so they don't fight external ones */
+            bias-pull-up;
         };
     };
 
@@ -21,13 +14,13 @@
                 <NRF_PSEL(TWIM_SDA, 0, 22)>,
                 <NRF_PSEL(TWIM_SCL, 0, 24)>;
             low-power-enable;
-            bias-disable; /* CRITICAL: Wipes pin configuration down on sleep */
         };
     };
 };
 
 &i2c0 {
     status = "okay";
+    /* Point to BOTH default and sleep states to satisfy Nordic's pinctrl engine */
     pinctrl-0 = <&i2c0_default>;
     pinctrl-1 = <&i2c0_sleep>;
     pinctrl-names = "default", "sleep";
@@ -37,9 +30,9 @@
     lis3dh@19 {
         compatible = "st,lis3dh", "st,lis2dh";
         reg = <0x19>;
-        status = "okay";
+        
         /* Interrupt pin on P0.31 */
         irq-gpios = <&gpio0 31 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
-        anym-on-int1;
+        anym-on-int1; 
     };
 };
