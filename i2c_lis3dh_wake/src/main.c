@@ -12,6 +12,8 @@
 static const struct gpio_dt_spec int1_gpio = GPIO_DT_SPEC_GET(
     DT_CHILD(DT_NODELABEL(i2c0), lis3dh_19), irq_gpios);
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+static const struct gpio_dt_spec pullup_pwr = GPIO_DT_SPEC_GET(
+    DT_PATH(zephyr_user), pullup_power_gpios);
 
 int main(void)
 {
@@ -26,6 +28,12 @@ int main(void)
         return -ENODEV;
     }
     rc = gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
+    if (rc < 0) return rc;
+
+    if (!gpio_is_ready_dt(&pullup_pwr)) {
+        return -ENODEV;
+    }
+    rc = gpio_pin_configure_dt(&pullup_pwr, GPIO_OUTPUT_ACTIVE);
     if (rc < 0) return rc;
 
     /* 2. Check IRQ GPIO ready */
@@ -88,6 +96,8 @@ int main(void)
         k_msleep(10000);
         gpio_pin_set_dt(&led0, 0);
     }
+
+    gpio_pin_set_dt(&pullup_pwr, 0);
 
     /* 8. Configure wakeup pin */
     rc = gpio_pin_configure_dt(&int1_gpio, GPIO_INPUT);
