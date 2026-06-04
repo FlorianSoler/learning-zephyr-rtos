@@ -1,4 +1,4 @@
-/* main.c - Application Centrale Bluetooth avec gestion de la LED0, Persistance et Timeout */
+/* main.c - Application Centrale Bluetooth avec gestion de la LED0, Persistance, Timeout et Reset Manuel */
 
 #include <zephyr/types.h>
 #include <stddef.h>
@@ -18,12 +18,14 @@
 // --- CONFIGURATION DU NOM CIBLE ---
 #define TARGET_NAME "SC only peripheral"
 
-// --- CONFIGURATION DU MATÉRIEL SANS ALIAS ---
-#define PAIR_BUTTON_NODE DT_PATH(buttons, button_0)
-#define LED0_NODE DT_ALIAS(led0)
+// --- CONFIGURATION DU MATÉRIEL DEVICETREE ---
+#define PAIR_BUTTON_NODE  DT_PATH(buttons, button_0)
+#define RESET_BUTTON_NODE DT_PATH(buttons, button_1) // <-- AJOUTÉ : bouton de reset matériel
+#define LED0_NODE         DT_ALIAS(led0)
 
-static const struct gpio_dt_spec pair_button = GPIO_DT_SPEC_GET(PAIR_BUTTON_NODE, gpios);
-static const struct gpio_dt_spec led0        = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+static const struct gpio_dt_spec pair_button  = GPIO_DT_SPEC_GET(PAIR_BUTTON_NODE, gpios);
+static const struct gpio_dt_spec reset_button = GPIO_DT_SPEC_GET(RESET_BUTTON_NODE, gpios); // <-- AJOUTÉ
+static const struct gpio_dt_spec led0         = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 static struct bt_conn *default_conn = NULL;
 static bool bond_found = false;
@@ -31,7 +33,7 @@ static bool allow_pairing = false;
 
 // Tâches différées (Work Queue)
 static struct k_work_delayable security_work;
-static struct k_work_delayable connection_timeout_work; // <-- AJOUTÉ : Pour éviter le blocage
+static struct k_work_delayable connection_timeout_work;
 
 // Callback d'analyse des paquets publicitaires reçus
 static bool parse_device_name(struct bt_data *data, void *user_data)
@@ -71,7 +73,7 @@ static void connection_timeout_handler(struct k_work *work)
         bt_conn_unref(default_conn);
         default_conn = NULL;
 
-        allow_pairing = false; // Réinitialise l'autorisation pour le bouton
+        allow_pairing = false; 
 
         printk("[Centrale] Relance automatique du scan...\n");
         bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
@@ -102,7 +104,7 @@ static void scan_recv(const struct bt_le_scan_recv_info *info, struct net_buf_si
                 printk("Echec du lancement de la connexion (err %d). Reprise du scan...\n", err);
                 bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
             } else {
-                // Securité : Si la connexion met plus de 5 secondes, le timeout se déclenche
+                // Sécurité : Si la connexion met plus de 5 secondes, le timeout se déclenche
                 k_work_schedule(&connection_timeout_work, K_MSEC(5000));
             }
         }
@@ -131,7 +133,6 @@ static void security_initiate_work(struct k_work *work)
 // --- CALLBACKS DE CONNEXION ---
 static void connected(struct bt_conn *conn, uint8_t err)
 {
-    // Annulation immédiate du timeout de connexion car le module a répondu
     k_work_cancel_delayable(&connection_timeout_work);
 
     if (err) {
@@ -185,14 +186,9 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
         printk("[Centrale] SECURITE ETABLIE ! Niveau actuel : %u\n", level);
         bond_found = true; 
     } else {
-        // Amélioration essentielle : Si l'échange de clés échoue (clé obsolète sur la clé physique),
-        // on supprime la liaison corrompue locale pour pouvoir ré-appairer proprement au bouton.
-        printk("[Centrale] Echec de la securisation (Erreur pile: %d). Nettoyage de la cle...\n", err);
-        
-        bt_unpair(BT_ID_DEFAULT, bt_conn_get_dst(conn));
-        bond_found = false;
-        allow_pairing = false;
-
+        // --- MODIFIÉ : Pas d'effacement automatique. On coupe juste le lien erroné.
+        // L'utilisateur devra appuyer sur le bouton_1 s'il souhaite forcer un reset de la clé locale.
+        printk("[Centrale] Echec de la securisation (Erreur pile: %d). Coupure du lien errone.\n", err);
         bt_conn_disconnect(conn, BT_HCI_ERR_AUTH_FAIL);
     }
 }
@@ -247,13 +243,23 @@ int init_hardware(void)
 {
     int ret;
 
+    // Bouton_0 (Appairage)
     if (!gpio_is_ready_dt(&pair_button)) {
-        printk("Erreur : Le GPIO du bouton n'est pas pret.\n");
+        printk("Erreur : Le GPIO du bouton d'appairage n'est pas pret.\n");
         return -ENODEV;
     }
     ret = gpio_pin_configure_dt(&pair_button, GPIO_INPUT);
     if (ret != 0) return ret;
 
+    // Bouton_1 (Reset Clés / Flash)
+    if (!gpio_is_ready_dt(&reset_button)) {
+        printk("Erreur : Le GPIO du bouton de reset n'est pas pret.\n");
+        return -ENODEV;
+    }
+    ret = gpio_pin_configure_dt(&reset_button, GPIO_INPUT);
+    if (ret != 0) return ret;
+
+    // LED0
     if (!gpio_is_ready_dt(&led0)) {
         printk("Erreur : Le GPIO de la LED0 n'est pas pret.\n");
         return -ENODEV;
@@ -273,7 +279,6 @@ int main(void)
     err = init_hardware();
     if (err) return err;
 
-    // Initialisation des travaux différés
     k_work_init_delayable(&security_work, security_initiate_work);
     k_work_init_delayable(&connection_timeout_work, connection_timeout_handler);
 
@@ -288,7 +293,6 @@ int main(void)
     bt_conn_auth_cb_register(&auth_cb_display);
     bt_conn_auth_info_cb_register(&auth_cb_info);
 
-    // Chargement des clés d'appairage depuis le système NVS/Flash
     if (IS_ENABLED(CONFIG_SETTINGS)) {
         err = settings_load();
         if (err) {
@@ -298,16 +302,14 @@ int main(void)
         }
     }
 
-    // --- CORRECTION CRITIQUE DU REDÉMARRAGE ---
-    // On retire la fonction bt_unpair() qui effaçait la mémoire au boot.
-    // À la place, on vérifie si une liaison valide existe déjà en mémoire.
+    // Vérification initiale des liaisons en Flash
     bond_found = false;
     bt_foreach_bond(BT_ID_DEFAULT, check_bond_cb, &bond_found);
 
     if (bond_found) {
         printk("[Boot] Liaison trouvee en Flash. Reconnexion automatique active.\n");
     } else {
-        printk("[Boot] Aucune liaison en Flash. Appuyez sur le bouton pour appairer.\n");
+        printk("[Boot] Aucune liaison en Flash. Appuyez sur bouton_0 pour appairer.\n");
     }
 
     bt_le_scan_cb_register(&scan_callbacks);
@@ -328,15 +330,46 @@ int main(void)
     printk("Scan actif global lance. En attente de la cible...\n");
 
     while (1) {
-        // Le bouton n'est pris en compte que si la carte n'est pas déjà liée (sécurité)
+        // --- 1. GESTION DU BOUTON_0 : LANCEMENT APPAIRAGE ---
         if (!bond_found) {
             if (gpio_pin_get_dt(&pair_button) == 1) {
                 if (!allow_pairing) {
                     allow_pairing = true;
-                    printk("\n[Bouton] Mode appairage active ! Autorisation de connexion a '%s'...\n", TARGET_NAME);
+                    printk("\n[Bouton_0] Mode appairage active ! Autorisation de connexion a '%s'...\n", TARGET_NAME);
                 }
             }
         }
+
+        // --- 2. GESTION DU BOUTON_1 : RESET MANUEL DES CLÉS DE LA FLASH ---
+        if (gpio_pin_get_dt(&reset_button) == 1) {
+            printk("\n[Bouton_1] Reset manuel detecte ! Nettoyage des clés Bluetooth...\n");
+
+            // Déconnexion forcée du lien en cours si existant
+            if (default_conn) {
+                printk("[Reset] Fermeture de la connexion active...\n");
+                bt_conn_disconnect(default_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+                k_msleep(400); // Laisse le temps à la pile d'exécuter la déconnexion
+            }
+
+            // Suppression définitive de toutes les clés d'appairage stockées localement
+            int unpair_err = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+            if (unpair_err) {
+                printk("[Reset] Erreur lors de la suppression des liaisons (err %d)\n", unpair_err);
+            } else {
+                printk("[Reset] SUCCÈS : Mémoire Flash réinitialisée. Toutes les clés sont effacées !\n");
+            }
+
+            // Réinitialisation des états locaux
+            bond_found = false;
+            allow_pairing = false;
+
+            // Anti-redondance : On bloque tant que le bouton_1 reste pressé
+            while (gpio_pin_get_dt(&reset_button) == 1) {
+                k_msleep(100);
+            }
+            printk("[Reset] Bouton_1 relâché. Centrale prête pour un tout nouvel appairage.\n");
+        }
+
         k_msleep(100);
     }
     return 0;

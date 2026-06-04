@@ -29,7 +29,7 @@ typedef struct {
  * @param service Pointer to the service context structure to populate.
  * @return 0 on success, negative errno code on failure.
  */
-int lis3dh_init(imu_service_t *service);
+int lis3dh_init(imu_service_t *service, const struct device *i2c_bus);
 
 /**
  * @brief Configure LIS3DH interrupt engine for any-motion detection.

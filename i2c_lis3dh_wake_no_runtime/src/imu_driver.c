@@ -3,14 +3,14 @@
 #include <errno.h>
 #include "imu_driver.h"
 
-int lis3dh_init(imu_service_t *service)
+int lis3dh_init(imu_service_t *service, const struct device *i2c_bus)
 {
     if (service == NULL) {
         return -EINVAL;
     }
 
     /* Locate the physical I2C device node defined in your device tree */
-    const struct device *i2c_bus = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+    //const struct device *i2c_bus = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
     if (!device_is_ready(i2c_bus)) {
         printk("Error: LIS3DH Driver could not bind to i2c0 device node.\n");

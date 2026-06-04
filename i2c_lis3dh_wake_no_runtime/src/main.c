@@ -22,10 +22,10 @@ static const struct gpio_dt_spec pullup_pwr =
  * ------------------------------------------------------------------ */
 /* Force Zephyr's build system to compile the pinctrl structures for i2c0 
  * since we aren't using the standard runtime device driver initialization */
-PINCTRL_DT_DEFINE(DT_NODELABEL(i2c0));
+// PINCTRL_DT_DEFINE(DT_NODELABEL(i2c0));
 
-static const struct pinctrl_dev_config *i2c0_pcfg =
-    PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(i2c0));
+// static const struct pinctrl_dev_config *i2c0_pcfg =
+//     PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(i2c0));
 
 int main(void)
 {
@@ -68,7 +68,7 @@ int main(void)
      * IMU INIT
      * ------------------------------------------------------------------ */
     if (imu_success) {
-        rc = lis3dh_init(&imu_service);
+        rc = lis3dh_init(&imu_service, i2c_dev);
         if (rc < 0) {
             printk("LIS3DH init failed: %d\n", rc);
             imu_success = false;
@@ -81,17 +81,6 @@ int main(void)
             printk("LIS3DH interrupt config failed: %d\n", rc);
             imu_success = false;
         }
-    }
-
-    /* ------------------------------------------------------------------
-     * CLEAR INTERRUPT LATCH
-     * ------------------------------------------------------------------ */
-    if (imu_success) {
-        uint8_t dummy;
-        i2c_reg_read_byte(imu_service.i2c_port,
-                          imu_service.imu_address,
-                          0x31, &dummy);
-        k_msleep(10);
     }
 
     printk("IMU initialized: %s\n", imu_success ? "OK" : "FAIL");
