@@ -1,4 +1,4 @@
-/* main.c - Application Centrale Bluetooth avec gestion de la LED0 */
+/* main.c - Application Centrale Bluetooth avec gestion de la LED0, Persistance et Timeout */
 
 #include <zephyr/types.h>
 #include <stddef.h>
@@ -29,8 +29,9 @@ static struct bt_conn *default_conn = NULL;
 static bool bond_found = false;
 static bool allow_pairing = false;
 
-// Travail différé pour l'élévation de sécurité
+// Tâches différées (Work Queue)
 static struct k_work_delayable security_work;
+static struct k_work_delayable connection_timeout_work; // <-- AJOUTÉ : Pour éviter le blocage
 
 // Callback d'analyse des paquets publicitaires reçus
 static bool parse_device_name(struct bt_data *data, void *user_data)
@@ -60,6 +61,23 @@ static void check_bond_cb(const struct bt_bond_info *info, void *user_data)
     printk("[Flash] Liaison existante trouvee avec : %s\n", addr_str);
 }
 
+// Callback de gestion du Timeout de connexion
+static void connection_timeout_handler(struct k_work *work)
+{
+    if (default_conn) {
+        printk("[Centrale] TIMEOUT : Le périphérique n'a pas répondu. Annulation de la tentative...\n");
+        
+        bt_conn_disconnect(default_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        bt_conn_unref(default_conn);
+        default_conn = NULL;
+
+        allow_pairing = false; // Réinitialise l'autorisation pour le bouton
+
+        printk("[Centrale] Relance automatique du scan...\n");
+        bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
+    }
+}
+
 // Callback appelée à chaque détection d'un signal Bluetooth publicitaire
 static void scan_recv(const struct bt_le_scan_recv_info *info, struct net_buf_simple *ad)
 {
@@ -83,6 +101,9 @@ static void scan_recv(const struct bt_le_scan_recv_info *info, struct net_buf_si
             if (err) {
                 printk("Echec du lancement de la connexion (err %d). Reprise du scan...\n", err);
                 bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
+            } else {
+                // Securité : Si la connexion met plus de 5 secondes, le timeout se déclenche
+                k_work_schedule(&connection_timeout_work, K_MSEC(5000));
             }
         }
     }
@@ -104,20 +125,22 @@ static void security_initiate_work(struct k_work *work)
     
     if (err && err != -EALREADY) {
         printk("Erreur critique lors de la demande de securite L4 (err %d)\n", err);
-    } else if (err == -EALREADY) {
-        printk("[Centrale] Chiffrement deja en cours d'etablissement...\n");
     }
 }
 
 // --- CALLBACKS DE CONNEXION ---
 static void connected(struct bt_conn *conn, uint8_t err)
 {
+    // Annulation immédiate du timeout de connexion car le module a répondu
+    k_work_cancel_delayable(&connection_timeout_work);
+
     if (err) {
         printk("[Centrale] Echec de la connexion (err %u)\n", err);
         if (default_conn == conn) {
             bt_conn_unref(default_conn);
             default_conn = NULL;
         }
+        allow_pairing = false;
         bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
         return;
     }
@@ -129,7 +152,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
     // --- ALLUMER LA LED0 ---
     gpio_pin_set_dt(&led0, 1);
 
-    // On planifie la demande de sécurité rapidement (50ms) après la connexion stable
     k_work_schedule(&security_work, K_MSEC(50));
 }
 
@@ -141,12 +163,14 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     gpio_pin_set_dt(&led0, 0);
 
     k_work_cancel_delayable(&security_work);
+    k_work_cancel_delayable(&connection_timeout_work);
 
     if (default_conn == conn) {
         bt_conn_unref(default_conn);
         default_conn = NULL;
     }
 
+    // Mise à jour de l'état des clés locales stockées en Flash
     bond_found = false;
     bt_foreach_bond(BT_ID_DEFAULT, check_bond_cb, &bond_found);
     allow_pairing = false; 
@@ -161,7 +185,14 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
         printk("[Centrale] SECURITE ETABLIE ! Niveau actuel : %u\n", level);
         bond_found = true; 
     } else {
-        printk("[Centrale] Echec de la securisation (Erreur de pile: %d). Deconnexion.\n", err);
+        // Amélioration essentielle : Si l'échange de clés échoue (clé obsolète sur la clé physique),
+        // on supprime la liaison corrompue locale pour pouvoir ré-appairer proprement au bouton.
+        printk("[Centrale] Echec de la securisation (Erreur pile: %d). Nettoyage de la cle...\n", err);
+        
+        bt_unpair(BT_ID_DEFAULT, bt_conn_get_dst(conn));
+        bond_found = false;
+        allow_pairing = false;
+
         bt_conn_disconnect(conn, BT_HCI_ERR_AUTH_FAIL);
     }
 }
@@ -172,7 +203,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .security_changed = security_changed,
 };
 
-// --- CALLBACKS DE SECURITE (INTERFACE ESSENTIELLE POUR L4) ---
+// --- CALLBACKS DE SECURITE ---
 static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 {
     printk("\n==================================\n");
@@ -198,7 +229,7 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 {
-    printk("Echec de l'appairage (Raison de l'echec: %d). Coupure de la connexion.\n", reason);
+    printk("Echec de l'appairage (Raison: %d). Coupure.\n", reason);
 }
 
 static struct bt_conn_auth_cb auth_cb_display = {
@@ -212,12 +243,10 @@ static struct bt_conn_auth_info_cb auth_cb_info = {
     .pairing_failed = pairing_failed,
 };
 
-// --- INITIALISATION DU MATÉRIEL (BOUTON & LED) ---
 int init_hardware(void)
 {
     int ret;
 
-    // Bouton
     if (!gpio_is_ready_dt(&pair_button)) {
         printk("Erreur : Le GPIO du bouton n'est pas pret.\n");
         return -ENODEV;
@@ -225,7 +254,6 @@ int init_hardware(void)
     ret = gpio_pin_configure_dt(&pair_button, GPIO_INPUT);
     if (ret != 0) return ret;
 
-    // LED0
     if (!gpio_is_ready_dt(&led0)) {
         printk("Erreur : Le GPIO de la LED0 n'est pas pret.\n");
         return -ENODEV;
@@ -240,12 +268,14 @@ int main(void)
 {
     int err;
 
-    printk("Demarrage de la Centrale Bluetooth...\n");
+    printk("Demarrage de la Centrale Bluetooth Sûre...\n");
 
     err = init_hardware();
     if (err) return err;
 
+    // Initialisation des travaux différés
     k_work_init_delayable(&security_work, security_initiate_work);
+    k_work_init_delayable(&connection_timeout_work, connection_timeout_handler);
 
     err = bt_enable(NULL);
     if (err) {
@@ -255,18 +285,30 @@ int main(void)
 
     printk("Puce Bluetooth activee.\n");
 
-    err = bt_conn_auth_cb_register(&auth_cb_display);
-    if (err) {
-        printk("Erreur d'enregistrement des IO capabilities (err %d)\n", err);
-    }
+    bt_conn_auth_cb_register(&auth_cb_display);
     bt_conn_auth_info_cb_register(&auth_cb_info);
 
+    // Chargement des clés d'appairage depuis le système NVS/Flash
     if (IS_ENABLED(CONFIG_SETTINGS)) {
-        settings_load();
+        err = settings_load();
+        if (err) {
+            printk("Erreur lors du chargement des cles (err %d)\n", err);
+        } else {
+            printk("Cles d'appairage Flash chargees avec succes.\n");
+        }
     }
 
-    bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-    printk("Nettoyage des anciennes liaisons Flash effectue.\n");
+    // --- CORRECTION CRITIQUE DU REDÉMARRAGE ---
+    // On retire la fonction bt_unpair() qui effaçait la mémoire au boot.
+    // À la place, on vérifie si une liaison valide existe déjà en mémoire.
+    bond_found = false;
+    bt_foreach_bond(BT_ID_DEFAULT, check_bond_cb, &bond_found);
+
+    if (bond_found) {
+        printk("[Boot] Liaison trouvee en Flash. Reconnexion automatique active.\n");
+    } else {
+        printk("[Boot] Aucune liaison en Flash. Appuyez sur le bouton pour appairer.\n");
+    }
 
     bt_le_scan_cb_register(&scan_callbacks);
 
@@ -283,14 +325,15 @@ int main(void)
         return err;
     }
 
-    printk("Scan actif global lance avec succes. En attente de la cible...\n");
+    printk("Scan actif global lance. En attente de la cible...\n");
 
     while (1) {
+        // Le bouton n'est pris en compte que si la carte n'est pas déjà liée (sécurité)
         if (!bond_found) {
             if (gpio_pin_get_dt(&pair_button) == 1) {
                 if (!allow_pairing) {
                     allow_pairing = true;
-                    printk("\n[Bouton] Mode appairage active ! Autorisation de se connecter a '%s'...\n", TARGET_NAME);
+                    printk("\n[Bouton] Mode appairage active ! Autorisation de connexion a '%s'...\n", TARGET_NAME);
                 }
             }
         }
