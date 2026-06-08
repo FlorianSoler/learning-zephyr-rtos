@@ -7,6 +7,7 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/reboot.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/hci.h>
@@ -363,6 +364,8 @@ int main(void)
                 k_msleep(100);
             }
             printk("[Polling] Bouton relache. Systeme pret.\n");
+            k_msleep(100);
+            sys_reboot(SYS_REBOOT_COLD);
         }
 
         k_msleep(100);
