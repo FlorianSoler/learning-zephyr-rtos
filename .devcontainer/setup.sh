@@ -1,22 +1,17 @@
 #!/bin/bash
 set -e
-
-cd /workspaces/zephyrproject
+cd /workspaces/LearningZephyr
 
 if [ ! -d ".west" ]; then
+    echo "Initializing Zephyr workspace..."
     west init -l .
 fi
 
+echo "Updating Zephyr modules..."
 west update
+
+# Install Python requirements BEFORE running west extension commands
+pip3 install -r /workspaces/zephyr/scripts/requirements.txt
+
+# Now export the environment safely
 west zephyr-export
-
-pip3 install -r /opt/zephyrproject/zephyr/scripts/requirements.txt
-
-mkdir -p build
-
-# Generate compile_commands.json for IntelliSense
-west build -b native_sim samples/hello_world -- -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-ln -sf build/compile_commands.json compile_commands.json
-
-echo "Zephyr dev environment ready"

@@ -1,17 +1,25 @@
 {
-  "configurations": [
-    {
-      "name": "Zephyr",
-      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
-      "intelliSenseMode": "linux-gcc-x64",
-      "compilerPath": "/usr/bin/gcc",
-      "cStandard": "c11",
-      "cppStandard": "c++17",
-      "includePath": [
-        "${workspaceFolder}/**",
-        "/opt/zephyrproject/**"
-      ]
-    }
-  ],
-  "version": 4
+    "configurations": [
+        {
+            "name": "ZephyrRTOSConfiguration",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${env:GNUARMEMB_TOOLCHAIN_PATH}/arm-zephyr-eabi/**"
+            ],
+            "defines": [],
+            "compilerPath": "${env:GNUARMEMB_TOOLCHAIN_PATH}/bin/arm-zephyr-eabi-gcc",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "IntelliSenseMode": "gcc-arm",
+            "browse": {
+                "path": [
+                    "${GNUARMEMB_TOOLCHAIN_PATH}/arm-zephyr-eabi/include/*",
+                    "${workspaceFolder}/include/**",
+                    "${workspaceFolder}/app/src/**"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
 }
