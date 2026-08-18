@@ -28,7 +28,6 @@
         "ms-vscode.cpptools-extension-pack",
         "nordic-semiconductor.nrf-connect",
         "ms-azuretools.vscode-docker",
-        "eamodio.gitlens"
       ]
     }
   }

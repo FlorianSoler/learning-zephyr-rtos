@@ -28,6 +28,7 @@ LOG_MODULE_REGISTER(motion_app, LOG_LEVEL_INF);
 static const struct device *gpio0_dev;
 static const struct device *i2c_dev;
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+static const struct gpio_dt_spec pullup_pin = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), i2c_pullup_gpios);
 
 static struct gpio_callback imu_cb;
 static struct k_sem second_pulse_sem;
@@ -122,6 +123,12 @@ int main(void)
 
     gpio0_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     i2c_dev   = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+
+    int err = gpio_pin_configure_dt(&pullup_pin, GPIO_OUTPUT_ACTIVE);
+    if (err) {
+        LOG_ERR("Failed to configure pullup power pin: %d", err);
+        return err;
+    }
 
     if (!device_is_ready(gpio0_dev) || !device_is_ready(i2c_dev)) {
         LOG_ERR("Hardware peripherals not ready");
