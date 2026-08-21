@@ -32,7 +32,7 @@
     
     clock-frequency = <100000>; 
 
-    lis3dh@19 {
+    lis3dh: lis3dh@19 {
         compatible = "st,lis3dh", "st,lis2dh";
         reg = <0x19>;
         
